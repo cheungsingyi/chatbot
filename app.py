@@ -40,14 +40,8 @@ async def on_chat_start():
         
         tools = await mcp_manager.get_all_tools()
         
-        tool_summary = {}
-        for server_name, server_tools in mcp_manager.tools.items():
-            tool_summary[server_name] = [t.name for t in server_tools]
-        
-        tools_list = "\n".join([
-            f"**{server}**: {', '.join(tools)}"
-            for server, tools in tool_summary.items()
-        ])
+        tool_names = [t.name for t in tools]
+        tools_list = ", ".join(tool_names)
         
         await cl.Message(
             content=f"## 🛠️ Available Tools ({len(tools)} total)\n\n{tools_list}"

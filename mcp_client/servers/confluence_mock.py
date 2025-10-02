@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-import asyncio
-import sys
-from typing import Any
-from mcp.server import Server
-from mcp.types import Tool, TextContent
-from mcp.server.stdio import stdio_server
+from fastmcp import FastMCP
 
 MOCK_CONFLUENCE_DATA = {
     "Engineering": {
@@ -181,123 +176,62 @@ Planned: December 15, 2024
     }
 }
 
-app = Server("confluence-mock")
+mcp = FastMCP("confluence-mock")
 
-@app.list_tools()
-async def list_tools() -> list[Tool]:
-    return [
-        Tool(
-            name="search_confluence",
-            description="Search for information in the internal Confluence knowledge base. Returns relevant page excerpts based on the query.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Search query to find relevant pages"
-                    },
-                    "space": {
-                        "type": "string",
-                        "description": "Confluence space to search in (Engineering, Product, HR, Finance). Leave empty to search all spaces.",
-                        "enum": ["Engineering", "Product", "HR", "Finance", ""]
-                    }
-                },
-                "required": ["query"]
-            }
-        ),
-        Tool(
-            name="get_confluence_page",
-            description="Retrieve the full content of a specific Confluence page by its page ID.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "page_id": {
-                        "type": "string",
-                        "description": "The unique ID of the Confluence page (e.g., 'eng-001', 'prod-002')"
-                    }
-                },
-                "required": ["page_id"]
-            }
-        ),
-        Tool(
-            name="list_confluence_spaces",
-            description="List all available Confluence spaces and their descriptions.",
-            inputSchema={
-                "type": "object",
-                "properties": {}
-            }
+@mcp.tool()
+def search_confluence(query: str, space: str = "") -> str:
+    """Search for information in the internal Confluence knowledge base. Returns relevant page excerpts based on the query.
+    
+    Args:
+        query: Search query to find relevant pages
+        space: Confluence space to search in (Engineering, Product, HR, Finance). Leave empty to search all spaces.
+    """
+    query_lower = query.lower()
+    results = []
+    spaces_to_search = [space] if space else MOCK_CONFLUENCE_DATA.keys()
+    
+    for search_space in spaces_to_search:
+        if search_space not in MOCK_CONFLUENCE_DATA:
+            continue
+            
+        for page_title, page_data in MOCK_CONFLUENCE_DATA[search_space].items():
+            if query_lower in page_title.lower() or query_lower in page_data["content"].lower():
+                preview = page_data["content"][:200].strip()
+                results.append(
+                    f"**[{search_space}] {page_title}** (ID: {page_data['id']})\n{preview}..."
+                )
+    
+    if not results:
+        return f"No results found for query: '{query}'"
+    
+    return f"Found {len(results)} result(s):\n\n" + "\n\n---\n\n".join(results)
+
+@mcp.tool()
+def get_confluence_page(page_id: str) -> str:
+    """Retrieve the full content of a specific Confluence page by its page ID.
+    
+    Args:
+        page_id: The unique ID of the Confluence page (e.g., 'eng-001', 'prod-002')
+    """
+    for space, pages in MOCK_CONFLUENCE_DATA.items():
+        for page_title, page_data in pages.items():
+            if page_data["id"] == page_id:
+                return f"**[{space}] {page_title}**\n\n{page_data['content']}"
+    
+    return f"Page not found: {page_id}"
+
+@mcp.tool()
+def list_confluence_spaces() -> str:
+    """List all available Confluence spaces and their descriptions."""
+    spaces_info = []
+    for space, pages in MOCK_CONFLUENCE_DATA.items():
+        page_count = len(pages)
+        page_titles = ", ".join(list(pages.keys())[:3])
+        spaces_info.append(
+            f"**{space}** ({page_count} pages)\n  Pages: {page_titles}..."
         )
-    ]
-
-@app.call_tool()
-async def call_tool(name: str, arguments: Any) -> list[TextContent]:
-    if name == "search_confluence":
-        query = arguments.get("query", "").lower()
-        space_filter = arguments.get("space", "")
-        
-        results = []
-        spaces_to_search = [space_filter] if space_filter else MOCK_CONFLUENCE_DATA.keys()
-        
-        for space in spaces_to_search:
-            if space not in MOCK_CONFLUENCE_DATA:
-                continue
-                
-            for page_title, page_data in MOCK_CONFLUENCE_DATA[space].items():
-                if query in page_title.lower() or query in page_data["content"].lower():
-                    preview = page_data["content"][:200].strip()
-                    results.append(
-                        f"**[{space}] {page_title}** (ID: {page_data['id']})\n{preview}..."
-                    )
-        
-        if not results:
-            return [TextContent(
-                type="text",
-                text=f"No results found for query: '{arguments.get('query')}'"
-            )]
-        
-        return [TextContent(
-            type="text",
-            text=f"Found {len(results)} result(s):\n\n" + "\n\n---\n\n".join(results)
-        )]
     
-    elif name == "get_confluence_page":
-        page_id = arguments.get("page_id")
-        
-        for space, pages in MOCK_CONFLUENCE_DATA.items():
-            for page_title, page_data in pages.items():
-                if page_data["id"] == page_id:
-                    return [TextContent(
-                        type="text",
-                        text=f"**[{space}] {page_title}**\n\n{page_data['content']}"
-                    )]
-        
-        return [TextContent(
-            type="text",
-            text=f"Page not found: {page_id}"
-        )]
-    
-    elif name == "list_confluence_spaces":
-        spaces_info = []
-        for space, pages in MOCK_CONFLUENCE_DATA.items():
-            page_count = len(pages)
-            page_titles = ", ".join(list(pages.keys())[:3])
-            spaces_info.append(
-                f"**{space}** ({page_count} pages)\n  Pages: {page_titles}..."
-            )
-        
-        return [TextContent(
-            type="text",
-            text="Available Confluence Spaces:\n\n" + "\n\n".join(spaces_info)
-        )]
-    
-    return [TextContent(
-        type="text",
-        text=f"Unknown tool: {name}"
-    )]
-
-async def main():
-    async with stdio_server() as (read_stream, write_stream):
-        await app.run(read_stream, write_stream, app.create_initialization_options())
+    return "Available Confluence Spaces:\n\n" + "\n\n".join(spaces_info)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    mcp.run()

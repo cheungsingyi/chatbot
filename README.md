@@ -4,14 +4,15 @@
 
 ## 🌟 Features
 
-- **🔌 MCP Integration**: Modular plugin system with 2 MCP servers
+- **🔌 MCP Integration**: Modular plugin system with 2 MCP servers (built with **FastMCP**)
   - **Confluence Mock Server**: Internal knowledge base (Engineering, Product, HR, Finance)
   - **Calculator Server**: Mathematical operations, unit conversions, statistics, date calculations
 
 - **🤖 LangGraph Research Agent**: Intelligent agent with tool-calling capabilities
-- **🎨 Interactive UI**: Real-time MCP server status display
+- **🎨 Interactive UI**: Real-time MCP server status display with streaming responses
 - **🔒 Air-Gapped Ready**: Works without external internet access
 - **⚡ OpenRouter LLM**: Powered by Grok-4-fast via OpenRouter
+- **📦 FastMCP**: Modern decorator-based MCP server implementation (28% code reduction)
 
 ## 📁 Project Structure
 
@@ -23,16 +24,16 @@ chatbot3/
 ├── mcp.json                 # MCP servers definition
 ├── requirements.txt         # Python dependencies
 ├── app.py                   # Main Chainlit application
-├── mcp/
-│   ├── client.py           # MCP client manager
+├── mcp_client/
+│   ├── client.py           # MCP client manager (MultiServerMCPClient)
 │   └── servers/
-│       ├── confluence_mock.py  # Mock Confluence MCP server
-│       └── calculator.py       # Calculator MCP server
+│       ├── confluence_mock.py  # Mock Confluence MCP server (FastMCP)
+│       └── calculator.py       # Calculator MCP server (FastMCP)
 ├── agents/
-│   ├── research_agent.py   # LangGraph agent
+│   ├── research_agent.py   # LangGraph agent (create_react_agent)
 │   └── config.py           # Agent configuration
 └── utils/
-    └── llm.py              # OpenRouter LLM setup
+    └── llm.py              # OpenRouter LLM setup (ChatOpenAI)
 ```
 
 ## 🚀 Quick Start
@@ -170,19 +171,20 @@ Agent:
 └─────────────────────────────────────────────────────────────┘
                             ↓
 ┌─────────────────────────────────────────────────────────────┐
-│              MCP Integration Layer                          │
+│                  MCP Integration Layer                          │
 │  ┌────────────────────┐    ┌──────────────────────────┐    │
-│  │ langchain-mcp-     │    │  MCPClientManager        │    │
-│  │ adapters           │    │  - Connection handling   │    │
-│  │ (Tool Conversion)  │    │  - Session management    │    │
+│  │ MultiServerMCP-    │    │  MCPClientManager        │    │
+│  │ Client (high-level)│    │  - Connection config     │    │
+│  │ (Tool Conversion)  │    │  - Multi-transport       │    │
 │  └────────────────────┘    └──────────────────────────┘    │
 └─────────────────────────────────────────────────────────────┘
                             ↓
 ┌─────────────────────────────────────────────────────────────┐
-│                  MCP Servers Layer                          │
+│                  MCP Servers Layer (FastMCP)                │
 │  ┌──────────────────┐    ┌──────────────────────────┐      │
 │  │ Confluence Mock  │    │  Calculator              │      │
 │  │ (3 tools)        │    │  (4 tools)               │      │
+│  │ @mcp.tool()      │    │  @mcp.tool()             │      │
 │  └──────────────────┘    └──────────────────────────┘      │
 └─────────────────────────────────────────────────────────────┘
                             ↓
@@ -194,47 +196,24 @@ Agent:
 
 ## 🔧 Adding More MCP Servers
 
-To add a new MCP server:
+To add a new MCP server using FastMCP:
 
-1. **Create the server** in `mcp/servers/your_server.py`:
+1. **Create the server** in `mcp_client/servers/your_server.py`:
 
 ```python
 #!/usr/bin/env python3
-import asyncio
-from mcp.server import Server
-from mcp.types import Tool, TextContent
-from mcp.server.stdio import stdio_server
+from fastmcp import FastMCP
 
-app = Server("your-server")
+mcp = FastMCP("your-server")
 
-@app.list_tools()
-async def list_tools() -> list[Tool]:
-    return [
-        Tool(
-            name="your_tool",
-            description="What your tool does",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "param": {"type": "string", "description": "Parameter"}
-                },
-                "required": ["param"]
-            }
-        )
-    ]
-
-@app.call_tool()
-async def call_tool(name: str, arguments: Any) -> list[TextContent]:
-    if name == "your_tool":
-        result = do_something(arguments["param"])
-        return [TextContent(type="text", text=result)]
-
-async def main():
-    async with stdio_server() as (read_stream, write_stream):
-        await app.run(read_stream, write_stream, app.create_initialization_options())
+@mcp.tool()
+def your_tool(param: str) -> str:
+    """What your tool does. This docstring becomes the tool description."""
+    result = do_something(param)
+    return result
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    mcp.run()
 ```
 
 2. **Register in mcp.json**:
@@ -244,7 +223,7 @@ if __name__ == "__main__":
   "mcpServers": {
     "your-server": {
       "command": "python",
-      "args": ["mcp/servers/your_server.py"],
+      "args": ["mcp_client/servers/your_server.py"],
       "transport": "stdio",
       "description": "Your server description"
     }
@@ -253,6 +232,32 @@ if __name__ == "__main__":
 ```
 
 3. **Restart the application** - tools will be automatically loaded!
+
+## 📚 Key Libraries & Patterns
+
+### High-Level Abstractions Used
+
+1. **FastMCP** (`mcp_client/servers/*.py`)
+   - Modern decorator-based MCP server framework
+   - Auto-generates JSON schemas from type hints
+   - Docstrings become tool descriptions
+   - Eliminated 199 lines of boilerplate (28% reduction)
+
+2. **MultiServerMCPClient** (`mcp_client/client.py`)
+   - From `langchain-mcp-adapters.client`
+   - Manages multiple MCP server connections
+   - Handles sessions and cleanup automatically
+   - No manual context manager handling needed
+
+3. **create_react_agent** (`agents/research_agent.py`)
+   - From `langgraph.prebuilt`
+   - Pre-built ReAct agent with tool calling
+   - Handles reasoning and action loops
+
+4. **LangchainCallbackHandler** (`app.py`)
+   - Chainlit's built-in streaming handler
+   - Real-time token streaming to UI
+   - Automatic message formatting
 
 ## 🐛 Troubleshooting
 
@@ -283,11 +288,12 @@ echo $OPENROUTER_API_KEY
 ## 📚 Dependencies
 
 - **chainlit>=1.3.0**: UI framework
-- **langgraph>=0.2.0**: Agent orchestration
+- **langgraph>=0.2.0**: Agent orchestration (create_react_agent)
 - **langchain>=0.3.0**: LLM framework
 - **langchain-openai>=0.2.0**: OpenAI/OpenRouter integration
-- **langchain-mcp-adapters>=0.1.0**: MCP to LangChain conversion
-- **mcp>=1.0.0**: Model Context Protocol
+- **langchain-mcp-adapters>=0.1.0**: MCP to LangChain conversion (MultiServerMCPClient)
+- **mcp>=1.0.0**: Model Context Protocol SDK
+- **fastmcp>=2.12.0**: Modern decorator-based MCP server framework
 - **python-dotenv**: Environment management
 - **numpy**: Numerical computing
 - **python-dateutil**: Date parsing

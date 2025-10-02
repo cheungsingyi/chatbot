@@ -1,20 +1,15 @@
 import os
 import json
-import asyncio
 from typing import Dict, List, Any
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
 from langchain_core.tools import BaseTool
+from langchain_mcp_adapters.client import MultiServerMCPClient
 
 class MCPClientManager:
     def __init__(self, config_path: str = "mcp.json"):
         self.config_path = config_path
-        self.servers: Dict[str, Dict] = {}
-        self.sessions: Dict[str, ClientSession] = {}
-        self.stdio_contexts: Dict[str, Any] = {}
-        self.session_contexts: Dict[str, Any] = {}
-        self.tools: Dict[str, List[BaseTool]] = {}
-        self._lock = asyncio.Lock()
+        self.client: MultiServerMCPClient | None = None
+        self.server_configs: Dict[str, Dict] = {}
+        self.tools: List[BaseTool] = []
         
     def load_config(self) -> Dict:
         if not os.path.exists(self.config_path):
@@ -25,117 +20,83 @@ class MCPClientManager:
         
         return config.get("mcpServers", {})
     
-    async def connect_server(self, name: str, server_config: Dict):
-        async with self._lock:
-            if name in self.sessions:
-                return {
-                    "name": name,
-                    "description": self.servers[name]["description"],
-                    "status": "already_connected"
-                }
-            
-            command = server_config.get("command", "python")
-            args = server_config.get("args", [])
-            description = server_config.get("description", "")
-            
-            server_params = StdioServerParameters(
-                command=command,
-                args=args,
-                env=None
-            )
-            
-            try:
-                stdio_ctx = stdio_client(server_params)
-                read, write = await stdio_ctx.__aenter__()
-                
-                session_ctx = ClientSession(read, write)
-                session = await session_ctx.__aenter__()
-                await session.initialize()
-                
-                self.servers[name] = {
-                    "config": server_config,
-                    "params": server_params,
-                    "description": description
-                }
-                
-                self.sessions[name] = session
-                self.stdio_contexts[name] = stdio_ctx
-                self.session_contexts[name] = session_ctx
-                
-                return {
-                    "name": name,
-                    "description": description,
-                    "status": "connected"
-                }
-            except Exception as e:
-                print(f"Failed to connect to {name}: {e}")
-                raise
+    def _build_connection_config(self, config: Dict) -> Dict[str, Any]:
+        transport = config.get("transport", "stdio")
+        
+        if transport == "stdio":
+            return {
+                "transport": "stdio",
+                "command": config.get("command", "python"),
+                "args": config.get("args", [])
+            }
+        elif transport == "streamable_http":
+            return {
+                "transport": "streamable_http",
+                "url": config["url"]
+            }
+        elif transport == "sse":
+            return {
+                "transport": "sse",
+                "url": config["url"]
+            }
+        elif transport == "websocket":
+            return {
+                "transport": "websocket",
+                "url": config["url"]
+            }
+        else:
+            raise ValueError(f"Unsupported transport type: {transport}")
     
     async def initialize_all_servers(self):
-        config = self.load_config()
-        results = []
+        self.server_configs = self.load_config()
         
-        for name, server_config in config.items():
-            try:
-                result = await self.connect_server(name, server_config)
-                results.append(result)
-            except Exception as e:
-                results.append({
+        connections = {
+            name: self._build_connection_config(config)
+            for name, config in self.server_configs.items()
+        }
+        
+        try:
+            self.client = MultiServerMCPClient(connections)  # type: ignore
+            
+            results = [
+                {
                     "name": name,
-                    "description": server_config.get("description", ""),
+                    "description": config.get("description", ""),
+                    "status": "connected"
+                }
+                for name, config in self.server_configs.items()
+            ]
+            
+            return results
+        except Exception as e:
+            return [
+                {
+                    "name": name,
+                    "description": config.get("description", ""),
                     "status": f"error: {str(e)}"
-                })
-        
-        return results
+                }
+                for name, config in self.server_configs.items()
+            ]
     
     def get_server_info(self) -> List[Dict]:
         return [
             {
                 "name": name,
-                "description": info["description"],
-                "command": info["config"]["command"],
-                "args": " ".join(info["config"]["args"])
+                "description": config.get("description", ""),
+                "command": config.get("command", "python"),
+                "args": " ".join(config.get("args", []))
             }
-            for name, info in self.servers.items()
+            for name, config in self.server_configs.items()
         ]
     
-    async def get_tools_from_server(self, name: str) -> List[BaseTool]:
-        if name not in self.sessions:
-            raise ValueError(f"Server not connected: {name}")
-        
-        session = self.sessions[name]
-        
-        from langchain_mcp_adapters.tools import load_mcp_tools
-        tools = await load_mcp_tools(session)
-        
-        return tools
-    
     async def get_all_tools(self) -> List[BaseTool]:
-        all_tools = []
+        if not self.client:
+            raise RuntimeError("Client not initialized. Call initialize_all_servers first.")
         
-        for name in self.servers.keys():
-            try:
-                tools = await self.get_tools_from_server(name)
-                self.tools[name] = tools
-                all_tools.extend(tools)
-            except Exception as e:
-                print(f"Error loading tools from {name}: {e}")
-        
-        return all_tools
+        self.tools = await self.client.get_tools()
+        return self.tools
     
     async def cleanup(self):
-        async with self._lock:
-            for name in list(self.sessions.keys()):
-                try:
-                    if name in self.session_contexts:
-                        await self.session_contexts[name].__aexit__(None, None, None)
-                    if name in self.stdio_contexts:
-                        await self.stdio_contexts[name].__aexit__(None, None, None)
-                except Exception as e:
-                    print(f"Error closing {name}: {e}")
-            
-            self.sessions.clear()
-            self.stdio_contexts.clear()
-            self.session_contexts.clear()
-            self.servers.clear()
-            self.tools.clear()
+        self.client = None
+        self.server_configs.clear()
+        self.tools.clear()
