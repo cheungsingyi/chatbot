@@ -1,7 +1,7 @@
 import asyncio
-from typing import Optional
+from typing import List, Optional
 import chainlit as cl
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from langchain_core.runnables import RunnableConfig
 
 from mcp_client.client import MCPClientManager
@@ -54,6 +54,7 @@ async def on_chat_start():
         cl.user_session.set("agent", agent)
         cl.user_session.set("mcp_manager", mcp_manager)
         cl.user_session.set("tools", tools)
+        cl.user_session.set("message_history", [])
         
         await cl.Message(
             content="✨ **Ready! I'm your AI Research Assistant with access to internal knowledge and analytical tools.**\n\nAsk me anything like:\n- 'Search for our API rate limits and convert to requests per hour'\n- 'What's our Q4 revenue and growth rate?'\n- 'Find our team sizes and calculate the average'"
@@ -68,6 +69,7 @@ async def on_chat_start():
 @cl.on_message
 async def on_message(message: cl.Message):
     agent = cl.user_session.get("agent")
+    message_history: List[BaseMessage] = cl.user_session.get("message_history") or []
     
     if not agent:
         await cl.Message(
@@ -79,12 +81,14 @@ async def on_message(message: cl.Message):
     await msg.send()
     
     try:
+        message_history.append(HumanMessage(content=message.content))
+        
         config = RunnableConfig(
             callbacks=[cl.LangchainCallbackHandler(stream_final_answer=True)]
         )
         
         response = await agent.ainvoke(
-            {"messages": [HumanMessage(content=message.content)]},
+            {"messages": message_history},
             config=config
         )
         
@@ -93,11 +97,15 @@ async def on_message(message: cl.Message):
             
             if hasattr(final_message, "content"):
                 msg.content = final_message.content
+                message_history.append(AIMessage(content=final_message.content))
             else:
                 msg.content = str(final_message)
+                message_history.append(AIMessage(content=str(final_message)))
         else:
             msg.content = str(response)
+            message_history.append(AIMessage(content=str(response)))
         
+        cl.user_session.set("message_history", message_history)
         await msg.update()
         
     except Exception as e:
