@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "confluence-mock": {
+      "command": "python",
+      "args": ["mcp_client/servers/confluence_mock.py"],
+      "transport": "stdio",
+      "description": "Internal company knowledge base (Confluence)"
+    },
+    "calculator": {
+      "command": "python",
+      "args": ["mcp_client/servers/calculator.py"],
+      "transport": "stdio",
+      "description": "Advanced calculator and data analysis tools"
+    }
+  }
+}
