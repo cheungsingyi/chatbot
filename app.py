@@ -1,70 +1,98 @@
 import asyncio
 from typing import List, Optional
 import chainlit as cl
+from chainlit.types import ThreadDict
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from langchain_core.runnables import RunnableConfig
 
 from mcp_client.client import MCPClientManager
 from agents.research_agent import create_research_agent
 from utils.llm import get_llm
+from utils.database import get_data_layer
 
-mcp_manager = MCPClientManager()
+_mcp_manager = None
+_mcp_tools = None
+_initialization_lock = asyncio.Lock()
+_is_initialized = False
+
+async def ensure_mcp_initialized():
+    global _mcp_manager, _mcp_tools, _is_initialized
+    
+    if _is_initialized and _mcp_manager and _mcp_tools:
+        return _mcp_manager, _mcp_tools
+    
+    async with _initialization_lock:
+        if _is_initialized and _mcp_manager and _mcp_tools:
+            return _mcp_manager, _mcp_tools
+        
+        if _mcp_manager is None:
+            _mcp_manager = MCPClientManager()
+        
+        await _mcp_manager.initialize_all_servers()
+        _mcp_tools = await _mcp_manager.get_all_tools()
+        _is_initialized = True
+        
+        return _mcp_manager, _mcp_tools
+
+@cl.data_layer
+def init_data_layer():
+    return get_data_layer()
+
+@cl.password_auth_callback
+async def auth_callback(username: str, password: str):
+    if username == "user" and password == "user":
+        return cl.User(
+            identifier="default_user", metadata={"role": "user", "provider": "credentials"}
+        )
+    else:
+        return None
 
 @cl.on_chat_start
 async def on_chat_start():
-    await cl.Message(
-        content="🚀 **Initializing AI Research Assistant...**"
-    ).send()
-    
-    await cl.Message(
-        content="📡 **Connecting to MCP Servers...**"
-    ).send()
-    
     try:
-        server_results = await mcp_manager.initialize_all_servers()
-        
-        servers_info = mcp_manager.get_server_info()
-        
-        server_list = "\n".join([
-            f"✅ **{s['name']}**\n   📝 {s['description']}\n   🔧 `{s['command']} {s['args']}`"
-            for s in servers_info
-        ])
-        
-        await cl.Message(
-            content=f"## 🎯 MCP Servers Connected ({len(servers_info)})\n\n{server_list}"
-        ).send()
-        
-        await cl.Message(
-            content="🔧 **Loading MCP tools...**"
-        ).send()
-        
-        tools = await mcp_manager.get_all_tools()
-        
-        tool_names = [t.name for t in tools]
-        tools_list = ", ".join(tool_names)
-        
-        await cl.Message(
-            content=f"## 🛠️ Available Tools ({len(tools)} total)\n\n{tools_list}"
-        ).send()
+        mcp_manager, tools = await ensure_mcp_initialized()
         
         llm = get_llm(temperature=0.7, streaming=True)
-        
         agent = create_research_agent(tools, llm)
         
         cl.user_session.set("agent", agent)
-        cl.user_session.set("mcp_manager", mcp_manager)
-        cl.user_session.set("tools", tools)
         cl.user_session.set("message_history", [])
         
         await cl.Message(
-            content="✨ **Ready! I'm your AI Research Assistant with access to internal knowledge and analytical tools.**\n\nAsk me anything like:\n- 'Search for our API rate limits and convert to requests per hour'\n- 'What's our Q4 revenue and growth rate?'\n- 'Find our team sizes and calculate the average'"
+            content="✨ Ready! Ask me anything."
         ).send()
         
     except Exception as e:
+        import traceback
         await cl.Message(
-            content=f"❌ **Error initializing MCP servers**: {str(e)}"
+            content=f"❌ Error: {str(e)}\n```\n{traceback.format_exc()}\n```"
         ).send()
-        raise
+
+@cl.on_chat_resume
+async def on_chat_resume(thread: ThreadDict):
+    try:
+        mcp_manager, tools = await ensure_mcp_initialized()
+        
+        llm = get_llm(temperature=0.7, streaming=True)
+        agent = create_research_agent(tools, llm)
+        
+        cl.user_session.set("agent", agent)
+        
+        message_history = []
+        if "steps" in thread:
+            for step in thread["steps"]:
+                if step.get("type") == "user_message":
+                    message_history.append(HumanMessage(content=step.get("output", "")))
+                elif step.get("type") in ["assistant_message", "run"]:
+                    message_history.append(AIMessage(content=step.get("output", "")))
+        
+        cl.user_session.set("message_history", message_history)
+        
+    except Exception as e:
+        import traceback
+        await cl.Message(
+            content=f"❌ Error resuming: {str(e)}\n```\n{traceback.format_exc()}\n```"
+        ).send()
 
 @cl.on_message
 async def on_message(message: cl.Message):
@@ -114,14 +142,8 @@ async def on_message(message: cl.Message):
 
 @cl.on_chat_end
 async def on_chat_end():
-    await mcp_manager.cleanup()
+    pass
 
 @cl.on_settings_update
 async def on_settings_update(settings):
-    mcp_manager = cl.user_session.get("mcp_manager")
-    
-    if mcp_manager:
-        servers_info = mcp_manager.get_server_info()
-        await cl.Message(
-            content=f"**Current MCP Servers**: {len(servers_info)} active"
-        ).send()
+    pass

@@ -97,6 +97,11 @@ class MCPClientManager:
         return self.tools
     
     async def cleanup(self):
+        if self.client:
+            try:
+                await self.client.cleanup()
+            except Exception:
+                pass
         self.client = None
         self.server_configs.clear()
         self.tools.clear()
