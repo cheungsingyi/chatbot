@@ -12,9 +12,16 @@ ENV/
 .chainlit/
 .files/
 server.log
+chainlit.log
+chainlit.pid
+*.log
+*.pid
 
 # Database
 *.db
+*.db-shm
+*.db-wal
+*.db-journal
 *.sqlite
 *.sqlite3
 
@@ -28,6 +35,11 @@ server.log
 *.swp
 *.swo
 *~
+
+# Development
+opencode.json
+app.py.backup
+*.backup
 
 # OS
 .DS_Store
